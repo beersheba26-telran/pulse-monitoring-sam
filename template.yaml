@@ -1,45 +1,85 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: >
-  pulse-monitoring
+Description: Lambda Python 3.14 triggered by SQS FIFO subscribed to existing SNS FIFO topic
 
-  Sample SAM Template for pulse-monitoring
+Parameters:
+  ExistingSnsFifoTopicArn:
+    Type: String
+    Description: ARN of existing SNS FIFO topic
+    Default: arn:aws:sns:us-east-1:246814138873:pulse-values.fifo
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+  QueueName:
+    Type: String
+    Default: pulse-events.fifo
+    Description: SQS FIFO queue name, must end with .fifo
+
 Globals:
   Function:
-    Timeout: 3
-
-    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
-    LoggingConfig:
-      LogFormat: JSON
-Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
-    Properties:
-      CodeUri: hello_world/
-      Handler: app.lambda_handler
-      Runtime: python3.14
-      Architectures:
+    Runtime: python3.14
+    Timeout: 10
+    MemorySize: 128
+    Architectures:
       - x86_64
+
+Resources:
+  PulseEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref QueueName
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 60
+
+  PulseEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref PulseEventsQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSnsToSendMessages
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt PulseEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref ExistingSnsFifoTopicArn
+
+  SnsToSqsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ExistingSnsFifoTopicArn
+      Protocol: sqs
+      Endpoint: !GetAtt PulseEventsQueue.Arn
+      RawMessageDelivery: true
+
+  PulseConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: pulse-sqs-fifo-consumer
+      CodeUri: pulse-values/
+      Handler: app.lambda_handler
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt PulseEventsQueue.QueueName
       Events:
-        HelloWorld:
-          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+        PulseEvents:
+          Type: SQS
           Properties:
-            Path: /hello
-            Method: get
+            Queue: !GetAtt PulseEventsQueue.Arn
+            BatchSize: 1
+            Enabled: true
 
 Outputs:
-  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
-  # Find out more about other implicit resources you can reference within SAM
-  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
-  HelloWorldApi:
-    Description: API Gateway endpoint URL for Prod stage for Hello World 
-      function
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/hello/"
-  HelloWorldFunction:
-    Description: Hello World Lambda Function ARN
-    Value: !GetAtt HelloWorldFunction.Arn
-  HelloWorldFunctionIamRole:
-    Description: Implicit IAM Role created for Hello World function
-    Value: !GetAtt HelloWorldFunctionRole.Arn
+  QueueUrl:
+    Value: !Ref PulseEventsQueue
+
+  QueueArn:
+    Value: !GetAtt PulseEventsQueue.Arn
+
+  LambdaName:
+    Value: !Ref PulseConsumerFunction
