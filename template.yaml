@@ -60,8 +60,8 @@ Resources:
   PulseConsumerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: pulse-sqs-fifo-consumer
-      CodeUri: pulse-values/
+      FunctionName: pulse-reducer
+      CodeUri: pulse_values_reducer/
       Handler: app.lambda_handler
       Policies:
         - SQSPollerPolicy:
