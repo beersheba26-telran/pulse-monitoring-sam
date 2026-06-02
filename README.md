@@ -18,6 +18,6 @@
 - Prints out reduced values
 # Simple imitator pulse values
 - 5 devices
-- each device sends random probe (device_id, random pulse value [60-200])
+- each device sends random probe (device_id, random pulse value [60-200], timestamp) directly to SNS instead of real ingest stream
 - duration is 5 minutes
 - each second - one generated probe

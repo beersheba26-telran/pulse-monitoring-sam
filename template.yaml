@@ -1,17 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Lambda Python 3.14 triggered by SQS FIFO subscribed to existing SNS FIFO topic
+Description: Pulse monitoring pipeline with FIFO ingest, data reduction, and reduced-values processing
 
 Parameters:
-  ExistingSnsFifoTopicArn:
-    Type: String
-    Description: ARN of existing SNS FIFO topic
-    Default: arn:aws:sns:us-east-1:246814138873:pulse-values.fifo
-
-  QueueName:
+  PulseEventsFifoTopicName:
     Type: String
     Default: pulse-events.fifo
-    Description: SQS FIFO queue name, must end with .fifo
+    Description: Name of the existing SNS FIFO topic for incoming pulse probes. This stack never creates or deletes it.
 
 Globals:
   Function:
@@ -22,10 +17,22 @@ Globals:
       - x86_64
 
 Resources:
+  ReducingDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: reducing_data
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: device_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: device_id
+          KeyType: HASH
+
   PulseEventsQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Ref QueueName
+      QueueName: pulse-events-queue.fifo
       FifoQueue: true
       ContentBasedDeduplication: true
       VisibilityTimeout: 60
@@ -47,25 +54,44 @@ Resources:
             Resource: !GetAtt PulseEventsQueue.Arn
             Condition:
               ArnEquals:
-                aws:SourceArn: !Ref ExistingSnsFifoTopicArn
+                aws:SourceArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
 
-  SnsToSqsSubscription:
+  PulseEventsSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: !Ref ExistingSnsFifoTopicArn
+      TopicArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
       Protocol: sqs
       Endpoint: !GetAtt PulseEventsQueue.Arn
       RawMessageDelivery: true
 
-  PulseConsumerFunction:
+  ReducedPulseValuesTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: reduced-pulse-values
+
+  PulseValuesReducerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: pulse-reducer
-      CodeUri: pulse_values_reducer/
-      Handler: app.lambda_handler
+      FunctionName: pulse-values-reducer
+      CodeUri: .
+      Handler: pulse_values_reducer.app.lambda_handler
       Policies:
         - SQSPollerPolicy:
             QueueName: !GetAtt PulseEventsQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReducingDataTable
+        - Statement:
+            - Sid: PublishReducedValues
+              Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref ReducedPulseValuesTopic
+      Environment:
+        Variables:
+          REDUCING_DATA_TABLE_NAME: !Ref ReducingDataTable
+          REDUCED_PULSE_VALUES_TOPIC_ARN: !Ref ReducedPulseValuesTopic
+          LOG_LEVEL: DEBUG
+          REDUCING_PERIOD_SECONDS: 60
       Events:
         PulseEvents:
           Type: SQS
@@ -74,12 +100,34 @@ Resources:
             BatchSize: 1
             Enabled: true
 
-Outputs:
-  QueueUrl:
-    Value: !Ref PulseEventsQueue
+  ReducedValuesProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: reduced-values-processor
+      CodeUri: .
+      Handler: reduced_values_processor.app.lambda_handler
+      Environment:
+        Variables:
+          LOG_LEVEL: DEBUG
+      Events:
+        ReducedValuesTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref ReducedPulseValuesTopic
 
-  QueueArn:
+Outputs:
+  ReducingDataTableName:
+    Description: DynamoDB table used by pulse_values_reducer
+    Value: !Ref ReducingDataTable
+
+  PulseEventsFifoTopicArn:
+    Description: SNS FIFO topic ARN that receives incoming pulse probes
+    Value: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
+
+  PulseEventsQueueArn:
+    Description: FIFO SQS queue subscribed to the pulse events FIFO topic
     Value: !GetAtt PulseEventsQueue.Arn
 
-  LambdaName:
-    Value: !Ref PulseConsumerFunction
+  ReducedPulseValuesTopicArn:
+    Description: Standard SNS topic for reduced pulse probes
+    Value: !Ref ReducedPulseValuesTopic
