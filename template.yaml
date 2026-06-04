@@ -105,6 +105,11 @@ Resources:
     Properties:
       TopicName: pulse-jumps    
 
+  AbnormalPulseValuesTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: abnormal-pulse-values
+
   PulseValuesReducerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -167,6 +172,45 @@ Resources:
             BatchSize: 1
             Enabled: true
 
+  DeviceDataProviderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: device-data-provider
+      CodeUri: .
+      Handler: device_data_provider.app.lambda_handler
+      Environment:
+        Variables:
+          LOG_LEVEL: DEBUG
+
+  AbnormalPulseAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: abnormal-pulse-analyzer
+      CodeUri: .
+      Handler: abnormal-pulse-analyzer.app.lambda_handler
+      Policies:
+        - Statement:
+            - Sid: InvokeDeviceDataProvider
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt DeviceDataProviderFunction.Arn
+            - Sid: PublishAbnormalPulseValues
+              Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref AbnormalPulseValuesTopic
+      Environment:
+        Variables:
+          DATA_PROVIDER_FUNCTION_NAME: !Ref DeviceDataProviderFunction
+          ABNORMAL_PULSE_TOPIC_ARN: !Ref AbnormalPulseValuesTopic
+          LOG_LEVEL: DEBUG
+      Events:
+        ReducedValuesTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref ReducedPulseValuesTopic
+
   ReducedValuesProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -213,3 +257,7 @@ Outputs:
   ReducedPulseValuesTopicArn:
     Description: Standard SNS topic for reduced pulse probes
     Value: !Ref ReducedPulseValuesTopic
+
+  AbnormalPulseValuesTopicArn:
+    Description: SNS topic for abnormal pulse events
+    Value: !Ref AbnormalPulseValuesTopic
