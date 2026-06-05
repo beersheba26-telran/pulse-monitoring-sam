@@ -12,6 +12,10 @@ MAX_INVOKE_RETRIES = 3
 THROTTLING_ERROR_CODES = {"TooManyRequestsException", "ThrottlingException"}
 LAMBDA_CLIENT = boto3.client("lambda")
 SNS_CLIENT = boto3.client("sns")
+STALE_TIME_SECONDS = int(os.environ.get("STALE_TIME_SECONDS", 3600))
+device_data_cache = {
+    # device_id: {"data": dict, "timestamp": int}
+}
 def _publish_abnormal_pulse_event(device_id: str, median_pulse_value: int, timestamp: int, normal_range_center: int, deviation_percent_threshold: int) -> None:
     event_payload = {
         "device_id": device_id,
@@ -50,6 +54,20 @@ def _invoke_data_provider(device_id: str) -> dict:
             )
             time.sleep(backoff_seconds)
 
+def _get_device_data(device_id: str) -> dict:
+    """cache functionality
+       if the device data was fetched less than STALE_TIME_SECONDS 
+         ago, return cached data, otherwise invoke data provider Lambda to get fresh data
+    """
+    if device_id in device_data_cache and time.time() - device_data_cache[device_id]["timestamp"] < STALE_TIME_SECONDS:
+        
+        logger.debug(f"Using cached data for device_id={device_id}")
+        response =  device_data_cache[device_id]["data"]
+    else:
+        response = _invoke_data_provider(device_id)
+        device_data_cache[device_id] = {"data": response, "timestamp": time.time()}
+        logger.debug(f"Fetched fresh data for device_id={device_id} and updated cache")
+    return response
 
 def _process_record(body: str) -> None:
     """Process a single SNS message body containing reduced pulse data."""
@@ -61,7 +79,7 @@ def _process_record(body: str) -> None:
         f"Processing reduced pulse data {bodyDict}",
     )
     try:
-        provider_response = _invoke_data_provider(device_id)
+        provider_response = _get_device_data(device_id)
     except ClientError as error:
         error_code = error.response.get("Error", {}).get("Code")
         logger.error(

@@ -8,6 +8,43 @@ Parameters:
     Default: pulse-events.fifo
     Description: Name of the existing SNS FIFO topic for incoming pulse probes. This stack never creates or deletes it.
 
+  ExistingDbCredentialsSecretArn:
+    Type: String
+    Default: arn:aws:secretsmanager:us-east-1:246814138873:secret:DB_PASSWORD-McVmoG
+    Description: ARN of an existing AWS Secrets Manager secret containing the DB password.
+
+  DbHost:
+    Type: String
+    Default: aws-1-ap-northeast-2.pooler.supabase.com
+    Description: Supabase PostgreSQL host name.
+
+  DbPort:
+    Type: Number
+    Default: 5432
+    Description: Supabase PostgreSQL port.
+
+  DbName:
+    Type: String
+    Default: postgres
+    Description: Supabase PostgreSQL database name.
+
+  DbUser:
+    Type: String
+    Default: postgres.cdhdwagtnlmssbchbhag
+    Description: PostgreSQL user name.
+
+  DbSslMode:
+    Type: String
+    Default: require
+    AllowedValues:
+      - disable
+      - allow
+      - prefer
+      - require
+      - verify-ca
+      - verify-full
+    Description: SSL mode for connecting to Supabase PostgreSQL.
+
 Globals:
   Function:
     Runtime: python3.14
@@ -164,6 +201,7 @@ Resources:
           PULSE_JUMPS_TOPIC_ARN: !Ref PulseJumpsTopic
           JUMP_THRESHOLD_PERCENT: 40
           LOG_LEVEL: DEBUG
+          STALE_TIME_SECONDS: 90
       Events:
         PulseEventsForJumps:
           Type: SQS
@@ -178,8 +216,21 @@ Resources:
       FunctionName: device-data-provider
       CodeUri: .
       Handler: device_data_provider.app.lambda_handler
+      Policies:
+        - Statement:
+            - Sid: ReadDbCredentialsSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ExistingDbCredentialsSecretArn
       Environment:
         Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
+          DB_HOST: !Ref DbHost
+          DB_PORT: !Ref DbPort
+          DB_NAME: !Ref DbName
+          DB_USER: !Ref DbUser
+          DB_SSLMODE: !Ref DbSslMode
           LOG_LEVEL: DEBUG
 
   AbnormalPulseAnalyzerFunction:
