@@ -8,6 +8,10 @@ Parameters:
     Default: pulse-events.fifo
     Description: Name of the existing SNS FIFO topic for incoming pulse probes. This stack never creates or deletes it.
 
+  ExistingDbCredentialsSecretArn:
+    Type: String
+    Default: arn:aws:secretsmanager:us-east-1:246814138873:secret:DB_PASSWORD-McVmoG
+    Description: ARN of an existing AWS Secrets Manager .
 Globals:
   Function:
     Runtime: python3.14
@@ -113,16 +117,20 @@ Resources:
             BatchSize: 1
             Enabled: true
 
-  JumpsProcessorFunction:
+  JumpsPopulatorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: jumps-processor
-      CodeUri: jumps_processor/
+      FunctionName: jumps-populator
+      CodeUri: jumps-populator/
       Handler: app.lambda_handler
       Layers:
         - !Ref CommonLayer
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref ExistingDbCredentialsSecretArn
       Environment:
         Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
           LOG_LEVEL: DEBUG
       Events:
         PulseJumpsTopicEvent:
