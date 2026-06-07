@@ -17,6 +17,16 @@ Globals:
       - x86_64
 
 Resources:
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: pulse-monitoring-common
+      ContentUri: layers/common-layer
+      CompatibleRuntimes:
+        - python3.14
+    Metadata:
+      BuildMethod: python3.14
+
   LastPulseValuesTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -74,8 +84,10 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: jumps-analyzer
-      CodeUri: .
-      Handler: jumps-analyzer.app.lambda_handler
+      CodeUri: jumps-analyzer/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLayer
       Policies:
         - SQSPollerPolicy:
             QueueName: !GetAtt PulseEventsForJumpsQueue.QueueName
@@ -93,7 +105,6 @@ Resources:
           PULSE_JUMPS_TOPIC_ARN: !Ref PulseJumpsTopic
           JUMP_THRESHOLD_PERCENT: 40
           LOG_LEVEL: DEBUG
-          STALE_TIME_SECONDS: 90
       Events:
         PulseEventsForJumps:
           Type: SQS
@@ -106,8 +117,10 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: jumps-processor
-      CodeUri: .
-      Handler: jumps_processor.app.lambda_handler
+      CodeUri: jumps_processor/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLayer
       Environment:
         Variables:
           LOG_LEVEL: DEBUG
