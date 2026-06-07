@@ -1,49 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Pulse monitoring pipeline with FIFO ingest, data reduction, and reduced-values processing
+Description: Pulse monitoring pipeline with FIFO ingest and jumps analysis
 
 Parameters:
   PulseEventsFifoTopicName:
     Type: String
     Default: pulse-events.fifo
     Description: Name of the existing SNS FIFO topic for incoming pulse probes. This stack never creates or deletes it.
-
-  ExistingDbCredentialsSecretArn:
-    Type: String
-    Default: arn:aws:secretsmanager:us-east-1:246814138873:secret:DB_PASSWORD-McVmoG
-    Description: ARN of an existing AWS Secrets Manager secret containing the DB password.
-
-  DbHost:
-    Type: String
-    Default: aws-1-ap-northeast-2.pooler.supabase.com
-    Description: Supabase PostgreSQL host name.
-
-  DbPort:
-    Type: Number
-    Default: 5432
-    Description: Supabase PostgreSQL port.
-
-  DbName:
-    Type: String
-    Default: postgres
-    Description: Supabase PostgreSQL database name.
-
-  DbUser:
-    Type: String
-    Default: postgres.cdhdwagtnlmssbchbhag
-    Description: PostgreSQL user name.
-
-  DbSslMode:
-    Type: String
-    Default: require
-    AllowedValues:
-      - disable
-      - allow
-      - prefer
-      - require
-      - verify-ca
-      - verify-full
-    Description: SSL mode for connecting to Supabase PostgreSQL.
 
 Globals:
   Function:
@@ -54,18 +17,6 @@ Globals:
       - x86_64
 
 Resources:
-  ReducingDataTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: reducing_data
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: device_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: device_id
-          KeyType: HASH
-
   LastPulseValuesTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -78,19 +29,10 @@ Resources:
         - AttributeName: device_id
           KeyType: HASH
 
-  PulseEventsQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: pulse-events-queue.fifo
-      FifoQueue: true
-      ContentBasedDeduplication: true
-      VisibilityTimeout: 60
-
   PulseEventsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
       Queues:
-        - !Ref PulseEventsQueue
         - !Ref PulseEventsForJumpsQueue
       PolicyDocument:
         Version: "2012-10-17"
@@ -102,19 +44,10 @@ Resources:
             Action:
               - sqs:SendMessage
             Resource:
-              - !GetAtt PulseEventsQueue.Arn
               - !GetAtt PulseEventsForJumpsQueue.Arn
             Condition:
               ArnEquals:
                 aws:SourceArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
-
-  PulseEventsSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
-      Protocol: sqs
-      Endpoint: !GetAtt PulseEventsQueue.Arn
-      RawMessageDelivery: true
 
   PulseEventsForJumpsQueue:
     Type: AWS::SQS::Queue
@@ -132,51 +65,10 @@ Resources:
       Endpoint: !GetAtt PulseEventsForJumpsQueue.Arn
       RawMessageDelivery: true
 
-  ReducedPulseValuesTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: reduced-pulse-values
-
   PulseJumpsTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: pulse-jumps    
-
-  AbnormalPulseValuesTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: abnormal-pulse-values
-
-  PulseValuesReducerFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: pulse-values-reducer
-      CodeUri: .
-      Handler: pulse_values_reducer.app.lambda_handler
-      Policies:
-        - SQSPollerPolicy:
-            QueueName: !GetAtt PulseEventsQueue.QueueName
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ReducingDataTable
-        - Statement:
-            - Sid: PublishReducedValues
-              Effect: Allow
-              Action:
-                - sns:Publish
-              Resource: !Ref ReducedPulseValuesTopic
-      Environment:
-        Variables:
-          REDUCING_DATA_TABLE_NAME: !Ref ReducingDataTable
-          REDUCED_PULSE_VALUES_TOPIC_ARN: !Ref ReducedPulseValuesTopic
-          LOG_LEVEL: DEBUG
-          REDUCING_PERIOD_SECONDS: 60
-      Events:
-        PulseEvents:
-          Type: SQS
-          Properties:
-            Queue: !GetAtt PulseEventsQueue.Arn
-            BatchSize: 1
-            Enabled: true
 
   JumpsAnalyzerFunction:
     Type: AWS::Serverless::Function
@@ -210,73 +102,6 @@ Resources:
             BatchSize: 1
             Enabled: true
 
-  DeviceDataProviderFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: device-data-provider
-      CodeUri: .
-      Handler: device_data_provider.app.lambda_handler
-      Policies:
-        - Statement:
-            - Sid: ReadDbCredentialsSecret
-              Effect: Allow
-              Action:
-                - secretsmanager:GetSecretValue
-              Resource: !Ref ExistingDbCredentialsSecretArn
-      Environment:
-        Variables:
-          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
-          DB_HOST: !Ref DbHost
-          DB_PORT: !Ref DbPort
-          DB_NAME: !Ref DbName
-          DB_USER: !Ref DbUser
-          DB_SSLMODE: !Ref DbSslMode
-          LOG_LEVEL: DEBUG
-
-  AbnormalPulseAnalyzerFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: abnormal-pulse-analyzer
-      CodeUri: .
-      Handler: abnormal-pulse-analyzer.app.lambda_handler
-      Policies:
-        - Statement:
-            - Sid: InvokeDeviceDataProvider
-              Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource: !GetAtt DeviceDataProviderFunction.Arn
-            - Sid: PublishAbnormalPulseValues
-              Effect: Allow
-              Action:
-                - sns:Publish
-              Resource: !Ref AbnormalPulseValuesTopic
-      Environment:
-        Variables:
-          DATA_PROVIDER_FUNCTION_NAME: !Ref DeviceDataProviderFunction
-          ABNORMAL_PULSE_TOPIC_ARN: !Ref AbnormalPulseValuesTopic
-          LOG_LEVEL: DEBUG
-      Events:
-        ReducedValuesTopicEvent:
-          Type: SNS
-          Properties:
-            Topic: !Ref ReducedPulseValuesTopic
-
-  ReducedValuesProcessorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: reduced-values-processor
-      CodeUri: .
-      Handler: reduced_values_processor.app.lambda_handler
-      Environment:
-        Variables:
-          LOG_LEVEL: DEBUG
-      Events:
-        ReducedValuesTopicEvent:
-          Type: SNS
-          Properties:
-            Topic: !Ref ReducedPulseValuesTopic
-
   JumpsProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -293,22 +118,6 @@ Resources:
             Topic: !Ref PulseJumpsTopic
 
 Outputs:
-  ReducingDataTableName:
-    Description: DynamoDB table used by pulse_values_reducer
-    Value: !Ref ReducingDataTable
-
   PulseEventsFifoTopicArn:
     Description: SNS FIFO topic ARN that receives incoming pulse probes
     Value: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
-
-  PulseEventsQueueArn:
-    Description: FIFO SQS queue subscribed to the pulse events FIFO topic
-    Value: !GetAtt PulseEventsQueue.Arn
-
-  ReducedPulseValuesTopicArn:
-    Description: Standard SNS topic for reduced pulse probes
-    Value: !Ref ReducedPulseValuesTopic
-
-  AbnormalPulseValuesTopicArn:
-    Description: SNS topic for abnormal pulse events
-    Value: !Ref AbnormalPulseValuesTopic
