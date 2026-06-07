@@ -31,27 +31,21 @@ def get_secret():
 
 def _resolve_db_credentials() -> tuple[str, str]:
     secret_value = get_secret()
-    default_user = os.environ["DB_USER"]
-    # Support both plain password secrets and JSON secrets with user/password.
     try:
         secret_obj = json.loads(secret_value)
-        if isinstance(secret_obj, dict):
-            logger.debug(f"Parsed secret value as JSON object: {secret_obj}")
-            password = secret_obj.get("password") or secret_obj.get("DB_PASSWORD") or secret_value
-            user = secret_obj.get("username") or secret_obj.get("user") or default_user
-            return user, password
+        logger.debug(f"the keys of the secret object are {list(secret_obj.keys())}")
+        URI = secret_obj.get("URI")
+        logger.debug(f"the URI value from the secret is {URI[:30]}...")  # log only the beginning of the URI for security reasons
+       
     except json.JSONDecodeError:
         logger.debug("Secret value is not a JSON object, using default user and secret value as password.")
         pass
 
-    return default_user, secret_value
+    return URI
 
 
-DB_USER, DB_PASSWORD = _resolve_db_credentials()
-DB_HOST = os.environ["DB_HOST"]
-DB_NAME = os.environ["DB_NAME"]
-DB_PORT = os.environ["DB_PORT"]
-URI = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+URI= _resolve_db_credentials()
+
 def lambda_handler(event, context):
     """even of direct invocation with device_id value
     it returns payload

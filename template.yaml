@@ -13,38 +13,7 @@ Parameters:
     Default: arn:aws:secretsmanager:us-east-1:246814138873:secret:DB_PASSWORD-McVmoG
     Description: ARN of an existing AWS Secrets Manager secret containing the DB password.
 
-  DbHost:
-    Type: String
-    Default: aws-1-ap-northeast-2.pooler.supabase.com
-    Description: Supabase PostgreSQL host name.
-
-  DbPort:
-    Type: Number
-    Default: 5432
-    Description: Supabase PostgreSQL port.
-
-  DbName:
-    Type: String
-    Default: postgres
-    Description: Supabase PostgreSQL database name.
-
-  DbUser:
-    Type: String
-    Default: postgres.cdhdwagtnlmssbchbhag
-    Description: PostgreSQL user name.
-
-  DbSslMode:
-    Type: String
-    Default: require
-    AllowedValues:
-      - disable
-      - allow
-      - prefer
-      - require
-      - verify-ca
-      - verify-full
-    Description: SSL mode for connecting to Supabase PostgreSQL.
-
+  
 Globals:
   Function:
     Runtime: python3.14
@@ -66,18 +35,6 @@ Resources:
         - AttributeName: device_id
           KeyType: HASH
 
-  LastPulseValuesTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: last_pulse_values
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: device_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: device_id
-          KeyType: HASH
-
   PulseEventsQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -91,7 +48,6 @@ Resources:
     Properties:
       Queues:
         - !Ref PulseEventsQueue
-        - !Ref PulseEventsForJumpsQueue
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -103,7 +59,6 @@ Resources:
               - sqs:SendMessage
             Resource:
               - !GetAtt PulseEventsQueue.Arn
-              - !GetAtt PulseEventsForJumpsQueue.Arn
             Condition:
               ArnEquals:
                 aws:SourceArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
@@ -116,43 +71,36 @@ Resources:
       Endpoint: !GetAtt PulseEventsQueue.Arn
       RawMessageDelivery: true
 
-  PulseEventsForJumpsQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: pulse-events-for-jumps-queue.fifo
-      FifoQueue: true
-      ContentBasedDeduplication: true
-      VisibilityTimeout: 60
-
-  PulseEventsForJumpsSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
-      Protocol: sqs
-      Endpoint: !GetAtt PulseEventsForJumpsQueue.Arn
-      RawMessageDelivery: true
-
   ReducedPulseValuesTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: reduced-pulse-values
-
-  PulseJumpsTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: pulse-jumps    
 
   AbnormalPulseValuesTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: abnormal-pulse-values
 
+  CommonLoggerLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: python3.14
+    Properties:
+      LayerName: common-logger
+      Description: Contains logger_config.py and loguru dependency shared across Lambda functions
+      ContentUri: layers/common-logger
+      CompatibleRuntimes:
+        - python3.14
+      RetentionPolicy: Retain
+
   PulseValuesReducerFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: pulse-values-reducer
-      CodeUri: .
-      Handler: pulse_values_reducer.app.lambda_handler
+      CodeUri: pulse_values_reducer/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
       Policies:
         - SQSPollerPolicy:
             QueueName: !GetAtt PulseEventsQueue.QueueName
@@ -178,44 +126,14 @@ Resources:
             BatchSize: 1
             Enabled: true
 
-  JumpsAnalyzerFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: jumps-analyzer
-      CodeUri: .
-      Handler: jumps-analyzer.app.lambda_handler
-      Policies:
-        - SQSPollerPolicy:
-            QueueName: !GetAtt PulseEventsForJumpsQueue.QueueName
-        - DynamoDBCrudPolicy:
-            TableName: !Ref LastPulseValuesTable
-        - Statement:
-            - Sid: PublishJumps
-              Effect: Allow
-              Action:
-                - sns:Publish
-              Resource: !Ref PulseJumpsTopic
-      Environment:
-        Variables:
-          LAST_PULSE_VALUES_TABLE_NAME: !Ref LastPulseValuesTable
-          PULSE_JUMPS_TOPIC_ARN: !Ref PulseJumpsTopic
-          JUMP_THRESHOLD_PERCENT: 40
-          LOG_LEVEL: DEBUG
-          STALE_TIME_SECONDS: 90
-      Events:
-        PulseEventsForJumps:
-          Type: SQS
-          Properties:
-            Queue: !GetAtt PulseEventsForJumpsQueue.Arn
-            BatchSize: 1
-            Enabled: true
-
   DeviceDataProviderFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: device-data-provider
-      CodeUri: .
-      Handler: device_data_provider.app.lambda_handler
+      CodeUri: device_data_provider/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
       Policies:
         - Statement:
             - Sid: ReadDbCredentialsSecret
@@ -226,19 +144,16 @@ Resources:
       Environment:
         Variables:
           DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
-          DB_HOST: !Ref DbHost
-          DB_PORT: !Ref DbPort
-          DB_NAME: !Ref DbName
-          DB_USER: !Ref DbUser
-          DB_SSLMODE: !Ref DbSslMode
           LOG_LEVEL: DEBUG
 
   AbnormalPulseAnalyzerFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: abnormal-pulse-analyzer
-      CodeUri: .
-      Handler: abnormal-pulse-analyzer.app.lambda_handler
+      CodeUri: abnormal-pulse-analyzer/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
       Policies:
         - Statement:
             - Sid: InvokeDeviceDataProvider
@@ -262,35 +177,30 @@ Resources:
           Properties:
             Topic: !Ref ReducedPulseValuesTopic
 
-  ReducedValuesProcessorFunction:
+  ReducedValuesPopulatorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: reduced-values-processor
-      CodeUri: .
-      Handler: reduced_values_processor.app.lambda_handler
+      FunctionName: reduced-values-populator
+      CodeUri: reduced_values_populator/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
+      Policies:
+        - Statement:
+            - Sid: ReadDbCredentialsSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ExistingDbCredentialsSecretArn
       Environment:
         Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
           LOG_LEVEL: DEBUG
       Events:
         ReducedValuesTopicEvent:
           Type: SNS
           Properties:
             Topic: !Ref ReducedPulseValuesTopic
-
-  JumpsProcessorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: jumps-processor
-      CodeUri: .
-      Handler: jumps_processor.app.lambda_handler
-      Environment:
-        Variables:
-          LOG_LEVEL: DEBUG
-      Events:
-        PulseJumpsTopicEvent:
-          Type: SNS
-          Properties:
-            Topic: !Ref PulseJumpsTopic
 
 Outputs:
   ReducingDataTableName:
@@ -312,3 +222,7 @@ Outputs:
   AbnormalPulseValuesTopicArn:
     Description: SNS topic for abnormal pulse events
     Value: !Ref AbnormalPulseValuesTopic
+
+  CommonLoggerLayerArn:
+    Description: Shared Lambda layer ARN with common logger configuration
+    Value: !Ref CommonLoggerLayer
