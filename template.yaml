@@ -126,6 +126,29 @@ Resources:
       Environment:
         Variables:
           DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
+          JUMP_MAJOR_THRESHOLD_PERCENT: 50
+          JUMP_CRITICAL_THRESHOLD_PERCENT: 70
+          LOG_LEVEL: DEBUG
+      Events:
+        PulseJumpsTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref PulseJumpsTopic
+
+  NotificationsJumpsPopulatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: notifications-jumps-populator
+      CodeUri: notifications-jumps-populator/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLayerArn
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref ExistingDbCredentialsSecretArn
+      Environment:
+        Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
           LOG_LEVEL: DEBUG
       Events:
         PulseJumpsTopicEvent:
