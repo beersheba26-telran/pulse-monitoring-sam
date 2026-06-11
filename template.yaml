@@ -202,6 +202,33 @@ Resources:
           Properties:
             Topic: !Ref ReducedPulseValuesTopic
 
+  NotificationsAbnormalValuesPopulatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: notifications-abnormal-values-populator
+      CodeUri: notifications-abnormal-values-populator/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
+      Policies:
+        - Statement:
+            - Sid: ReadDbCredentialsSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ExistingDbCredentialsSecretArn
+      Environment:
+        Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
+          ABNORMAL_VALUES_MAJOR_THRESHOLD_PERCENT: 70
+          ABNORMAL_VALUES_CRITICAL_THRESHOLD_PERCENT: 90
+          LOG_LEVEL: DEBUG
+      Events:
+        AbnormalValuesTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref AbnormalPulseValuesTopic
+
 Outputs:
   ReducingDataTableName:
     Description: DynamoDB table used by pulse_values_reducer

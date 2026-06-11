@@ -1,13 +1,9 @@
-# Notifications-abnormal-values-popultor
-## Lambda function
-- receives event from SNS Abnormal pulse values topic
-- inserts row inside table "notifications"
-## Notifications table according following schema
-
-![alt text](notifications.png)
-- type "ABNORMAL-VALUES"
-- status "CREATED"
-- severity "MINOR" - Deviation from normal central value and median value is 60% - 70%
-- severity "MAJOR" - Deviation from normal central value and median value is 71% - 90%
-- severity "CRITICAL" - Deviation from normal central value and median value is more 90%
+# Updates for sync with Supabase PostgreSQL
+## pulse_imitatoe_config.py
+### DEVICES should contain the data synced with DB (consider using AI for this sync)
+- device ids should match the DB "devices" table
+- groups should match the DB "groups" table
+- relation group and device id should match relation etween patient and group from DB
+### GROUPS data should be synced with groups data from DB
+# Merge two branches reduced-values-branch and jumps-branch in one main for running experiments for both reduced values and jumps
 
