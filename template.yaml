@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Pulse monitoring pipeline with FIFO ingest, data reduction, and reduced-values processing
+Description: Pulse monitoring pipeline with FIFO ingest, reduced-values processing, and jumps analysis
 
 Parameters:
   PulseEventsFifoTopicName:
@@ -35,6 +35,18 @@ Resources:
         - AttributeName: device_id
           KeyType: HASH
 
+  LastPulseValuesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: last_pulse_values
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: device_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: device_id
+          KeyType: HASH
+
   PulseEventsQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -48,6 +60,7 @@ Resources:
     Properties:
       Queues:
         - !Ref PulseEventsQueue
+        - !Ref PulseEventsForJumpsQueue
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -59,6 +72,7 @@ Resources:
               - sqs:SendMessage
             Resource:
               - !GetAtt PulseEventsQueue.Arn
+              - !GetAtt PulseEventsForJumpsQueue.Arn
             Condition:
               ArnEquals:
                 aws:SourceArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
@@ -71,10 +85,31 @@ Resources:
       Endpoint: !GetAtt PulseEventsQueue.Arn
       RawMessageDelivery: true
 
+  PulseEventsForJumpsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pulse-events-for-jumps-queue.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 60
+
+  PulseEventsForJumpsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${PulseEventsFifoTopicName}
+      Protocol: sqs
+      Endpoint: !GetAtt PulseEventsForJumpsQueue.Arn
+      RawMessageDelivery: true
+
   ReducedPulseValuesTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: reduced-pulse-values
+
+  PulseJumpsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: pulse-jumps
 
   AbnormalPulseValuesTopic:
     Type: AWS::SNS::Topic
@@ -123,6 +158,39 @@ Resources:
           Type: SQS
           Properties:
             Queue: !GetAtt PulseEventsQueue.Arn
+            BatchSize: 1
+            Enabled: true
+
+  JumpsAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: jumps-analyzer
+      CodeUri: jumps-analyzer/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt PulseEventsForJumpsQueue.QueueName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LastPulseValuesTable
+        - Statement:
+            - Sid: PublishJumps
+              Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref PulseJumpsTopic
+      Environment:
+        Variables:
+          LAST_PULSE_VALUES_TABLE_NAME: !Ref LastPulseValuesTable
+          PULSE_JUMPS_TOPIC_ARN: !Ref PulseJumpsTopic
+          JUMP_THRESHOLD_PERCENT: 40
+          LOG_LEVEL: DEBUG
+      Events:
+        PulseEventsForJumps:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PulseEventsForJumpsQueue.Arn
             BatchSize: 1
             Enabled: true
 
@@ -202,6 +270,33 @@ Resources:
           Properties:
             Topic: !Ref ReducedPulseValuesTopic
 
+  JumpsPopulatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: jumps-populator
+      CodeUri: jumps-populator/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
+      Policies:
+        - Statement:
+            - Sid: ReadDbCredentialsSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ExistingDbCredentialsSecretArn
+      Environment:
+        Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
+          JUMP_MAJOR_THRESHOLD_PERCENT: 50
+          JUMP_CRITICAL_THRESHOLD_PERCENT: 70
+          LOG_LEVEL: DEBUG
+      Events:
+        PulseJumpsTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref PulseJumpsTopic
+
   NotificationsAbnormalValuesPopulatorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -229,6 +324,33 @@ Resources:
           Properties:
             Topic: !Ref AbnormalPulseValuesTopic
 
+  NotificationsJumpsPopulatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: notifications-jumps-populator
+      CodeUri: notifications-jumps-populator/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref CommonLoggerLayer
+      Policies:
+        - Statement:
+            - Sid: ReadDbCredentialsSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ExistingDbCredentialsSecretArn
+      Environment:
+        Variables:
+          DB_CREDENTIALS_SECRET_ARN: !Ref ExistingDbCredentialsSecretArn
+          JUMP_MAJOR_THRESHOLD_PERCENT: 50
+          JUMP_CRITICAL_THRESHOLD_PERCENT: 70
+          LOG_LEVEL: DEBUG
+      Events:
+        PulseJumpsTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref PulseJumpsTopic
+
 Outputs:
   ReducingDataTableName:
     Description: DynamoDB table used by pulse_values_reducer
@@ -242,9 +364,17 @@ Outputs:
     Description: FIFO SQS queue subscribed to the pulse events FIFO topic
     Value: !GetAtt PulseEventsQueue.Arn
 
+  PulseEventsForJumpsQueueArn:
+    Description: FIFO SQS queue subscribed to pulse events for jumps analysis
+    Value: !GetAtt PulseEventsForJumpsQueue.Arn
+
   ReducedPulseValuesTopicArn:
     Description: Standard SNS topic for reduced pulse probes
     Value: !Ref ReducedPulseValuesTopic
+
+  PulseJumpsTopicArn:
+    Description: SNS topic for pulse jumps events
+    Value: !Ref PulseJumpsTopic
 
   AbnormalPulseValuesTopicArn:
     Description: SNS topic for abnormal pulse events
