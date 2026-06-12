@@ -70,7 +70,7 @@ def get_pulse_value(device_id: str) -> int:
     group_info = GROUPS[device_info["group"]]
     if not device_info["current_pulse"]:
         # Initial pulse value for the device
-        pulse = random.randint(group_info["pulse_min"], group_info["pulse_max"])
+        pulse = random.randint(group_info["first_pulse_range"][0], group_info["first_pulse_range"][1])
         device_info["current_pulse"] = pulse
     else:
         pulse = get_next_pulse_value(device_info["current_pulse"], group_info)
