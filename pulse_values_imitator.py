@@ -19,7 +19,6 @@ from logger_config import logger
 import boto3
 
 from pulse_imitator_config import (
-    DEVICE_COUNT,
     DURATION_SECONDS,
     INTERVAL_SECONDS,
     DEVICES,
